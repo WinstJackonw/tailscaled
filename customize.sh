@@ -15,24 +15,17 @@ SERVICE_DIR="/data/adb/service.d"
 INSTALL_DIR="/data/adb/tailscale"
 INSTALL_BIN_DIR="$INSTALL_DIR/bin"
 
+# A 32-bit shell can report armv8l even on an AArch64 kernel. Execute the
+# actual static payload: neither uname nor Android's ABI list proves support.
+chmod 0755 "$MODPATH/files/tailscale.combined"
+if ! "$MODPATH/files/tailscale.combined" --version >/dev/null 2>&1; then
+  abort "! Unsupported architecture: $ARCH"
+fi
+ui_print "- Static AArch64 binary execution verified (userspace: $ARCH)"
+
 if [ -f "$INSTALL_DIR/scripts/tailscaled.service" ]; then
    ui_print "- Stopping tailscaled service"
-   "$INSTALL_DIR/scripts/tailscaled.service" stop 2>&1 > /dev/null
-fi
-
-# Magisk/KernelSU may report the Android userspace architecture as arm even
-# when the kernel can run the bundled arm64 binary.
-if [ "$ARCH" = "arm" ]; then
-  case "$(uname -m 2>/dev/null)" in
-    aarch64|arm64)
-      ui_print "- 32-bit Android userspace on AArch64 kernel; using arm64 binary"
-      ARCH=arm64
-      ;;
-  esac
-fi
-
-if [ "$ARCH" != "arm64" ]; then
-  abort "! Unsupported architecture: $ARCH"
+   "$INSTALL_DIR/scripts/tailscaled.service" stop >/dev/null 2>&1 || abort "! Cannot stop existing tailscaled"
 fi
 
 ui_print "- Creating directories"
