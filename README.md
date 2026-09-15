@@ -52,6 +52,21 @@ You can explore to the issue tab, if there not exists, you can open issue, for h
 
 This module is confirmed to be supported for KernelSU
 
+## Building from source (fork)
+
+- `./build.sh` builds the module ZIP from the upstream Tailscale tag pinned in
+  `TAILSCALE_VERSION`, applies `android.ssh.patch`, and prints the SHA-256 of
+  the resulting ZIP. Requires Go; optionally set `ANDROID_NDK_HOME` for a
+  CGO build (otherwise a static `CGO_ENABLED=0` build is produced).
+- CI (`.github/workflows/build.yml`) builds on `v*-module.*` tag pushes and on
+  `workflow_dispatch`, attaching the ZIP to a GitHub Release.
+- **This is an unofficial fork/module packaging of Tailscale** — releases are
+  versioned `<upstream>-module.<n>` (e.g. `v1.102.4-module.1`) and contain
+  Android-specific patches. arm64 (aarch64) only.
+- If you fork this repository, the CI stamps `module.prop`/`update.json` URLs
+  from the repository it runs in; update the committed `updateJson`/
+  `zipUrl` hosts if you also want in-app update checks on your fork.
+
 ## Credits
 
 - [ANASFANANI & AUTHORS](https://github.com/anasfanani/Magisk-Tailscaled). for the repo structure.

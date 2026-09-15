@@ -1,162 +1,131 @@
-name: Build tailscale for Android
+name: Build module release
+
+# Builds the Magisk/KernelSU module from a clean runner and attaches the ZIP
+# to a GitHub Release when a release tag (e.g. v1.102.4-module.1) is pushed.
+# Manual runs (workflow_dispatch) build the version pinned in
+# TAILSCALE_VERSION and upload the ZIP as a workflow artifact instead.
+#
+# Requires no repository secrets: GITHUB_TOKEN is sufficient to create the
+# release and upload the artifact.
+
 on:
+  push:
+    tags:
+      - "v*-module.*"
   workflow_dispatch:
     inputs:
-      force:
-        description: 'Force build'
+      upstream_version:
+        description: "Upstream Tailscale tag to build (defaults to TAILSCALE_VERSION file)"
         required: false
-        type: boolean
-        default: false
-  schedule:
-    - cron: '0 0 * * 0'
-  
+        type: string
+
 permissions:
   contents: write
-  actions: write
-  
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: Get latest stable release from tailscale
-      id: get_stable_release
-      uses: octokit/request-action@v2.x
-      with:
-        route: GET /repos/tailscale/tailscale/releases/latest
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Get latest tag
-      run: |
-        latestTag="${{ fromJSON(steps.get_stable_release.outputs.data).tag_name }}"
-        echo "Latest tag: $latestTag"
-        echo "TAILSCALE_VERSION=${latestTag}" >> $GITHUB_ENV
+      - name: Checkout module repository
+        uses: actions/checkout@v4
 
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Fetch tags
-      run: git fetch --prune --unshallow --tags
-
-    - name: Check Latest Version
-      if: ${{ inputs.force == false }}
-      run: |
-        LATEST_VERSION=$(git describe --tags --abbrev=0 --always)
-        if [ "$LATEST_VERSION" == "${{ env.TAILSCALE_VERSION }}" ]; then
-          gh run cancel ${{ github.run_id }}
-        else
-          echo "New version found: ${LATEST_VERSION}"
-        fi
-      env:
-       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Checkout tailscale
-      uses: actions/checkout@v4
-      with:
-        repository: tailscale/tailscale
-        path: tailscale-build
-        ref: ${{ env.TAILSCALE_VERSION }}  
-
-    - name: Setup Go 1.24.x
-      uses: actions/setup-go@v5
-      with:
-        go-version: 'stable'
-        cache: false
-    
-    - name: Build Tailscale for Android
-      run: |
-
-        cd tailscale-build
-
-        patch -p1 < ../android.ssh.patch
-
-        sed -i 's|/etc/resolv.conf|/data/adb/tailscale/etc/resolv.conf|g' net/dns/resolvconfpath_default.go
-        sed -i 's|/etc/resolv.pre-tailscale-backup.conf|/data/adb/tailscale/etc/resolv.pre-tailscale-backup.conf|g' net/dns/resolvconfpath_default.go
-
-        eval `CGO_ENABLED=0 GOOS=$(go env GOHOSTOS) GOARCH=$(go env GOHOSTARCH) go run ./cmd/mkversion`
-        ldflags="-X tailscale.com/version.longStamp=${VERSION_LONG} -X tailscale.com/version.shortStamp=${VERSION_SHORT}"
-
-        echo "BUILD_TAILSCALE_VERSION=${VERSION_SHORT}" >> $GITHUB_ENV
-
-        NDK_BIN_PATH="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-
-        echo "Building for arm64"
-        CC=${NDK_BIN_PATH}/aarch64-linux-android21-clang CXX=${NDK_BIN_PATH}/aarch64-linux-android21-clang++ CGO_ENABLED=1 GOOS=android GOARCH=arm64 go build -tags ts_include_cli -ldflags "$ldflags -s -w" -o ./tailscale.combined -trimpath ./cmd/tailscaled
-
-    - name: Install UPX
-      uses: crazy-max/ghaction-upx@v3
-      with:
-        install-only: true
-
-    - name: Compress binaries
-      run: |
-        upx --version
-
-        echo "Compressing tailscale binaries for arm64"
-        du -hs ./tailscale-build/tailscale.combined
-        upx --lzma --best ./tailscale-build/tailscale.combined
-        du -hs ./tailscale-build/tailscale.combined
-        mkdir -p files
-        cp ./tailscale-build/tailscale.combined files/tailscale.combined
-        rm -rf tailscale-build
-    
-    - name: Build Magisk Module
-      run: |
-          version="${{ env.TAILSCALE_VERSION }}"
-          version_code=$(echo "${version}" | sed 's/[^0-9]//g')
-          echo "version=${version}" >> $GITHUB_ENV
-          echo "versionCode=${version_code}" >> $GITHUB_ENV
-          echo version=${version}
-          echo versionCode=${version_code}
-          
-          echo "id=tailscaled" > module.prop
-          echo "name=Tailscaled" >> module.prop
-          echo "version=${version}" >> module.prop
-          echo "versionCode=${version_code}" >> module.prop
-          echo "author=repotitan" >> module.prop
-          echo "description=Tailscale. The easiest, most secure way to use WireGuard and 2FA." >> module.prop
-          echo "updateJson=https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/main/update.json" >> module.prop
-    
-
-    - name: Create Module Zip
-      run: |
-        mkdir -p dist
-        zip -9 -r ./dist/Magisk-Tailscaled-${{ env.version }}.zip . -x "*git*" "dist/*" "*.zip" "*.json" "*.md" "*.patch"
-
-    - name: Set up Git
-      run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@github.com"
-
-    - name: Push updated files to Main branch
-      run: |
-          echo '{
-            "version": "${{ env.version }}",
-            "versionCode": "${{ env.versionCode }}",
-            "zipUrl": "https://github.com/${{ github.repository }}/releases/download/${{ env.version }}/Magisk-Tailscaled-${{ env.version }}.zip",
-            "changelog": "https://raw.githubusercontent.com/${{ github.repository }}/main/CHANGELOG.md"
-          }' > update.json
-          git add .
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
+      - name: Determine upstream version
+        run: |
+          set -euo pipefail
+          PINNED="$(tr -d '[:space:]' < TAILSCALE_VERSION)"
+          if [ -n "${{ inputs.upstream_version }}" ]; then
+            UPSTREAM="${{ inputs.upstream_version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            # v1.102.4-module.1 -> v1.102.4
+            UPSTREAM="${GITHUB_REF_NAME%%-module*}"
           else
-            git commit -m "Release ${{ env.version }}"
-            git push origin HEAD:main --force
-            git tag ${{ env.version }}
-            git push origin ${{ env.version }} -f
+            UPSTREAM="${PINNED}"
+          fi
+          echo "Pinned version : ${PINNED}"
+          echo "Upstream tag   : ${UPSTREAM}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${UPSTREAM}" != "${PINNED}" ]]; then
+            echo "::error::Release tag ${GITHUB_REF_NAME} does not match pinned upstream ${PINNED} (TAILSCALE_VERSION). Refusing to build a mismatched release."
+            exit 1
+          fi
+          echo "TAILSCALE_VERSION=${UPSTREAM}" >> "$GITHUB_ENV"
+          echo "MODULE_VERSION=${UPSTREAM}-module.1" >> "$GITHUB_ENV"
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Locate Android NDK
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+            NDK_DIR="$(ls -d /usr/local/lib/android/sdk/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+            if [ -n "${NDK_DIR}" ]; then
+              echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+            fi
           fi
 
-    - name: Create Release
-      id: create_release
-      uses: softprops/action-gh-release@v2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        append_body: true
-        generate_release_notes: true
-        make_latest: true
-        files: |
-          ./dist/Magisk-Tailscaled-${{ env.version }}.zip
-        name: ${{ env.version }}
-        tag_name: ${{ env.version }}
+      - name: Build module ZIP
+        run: ./build.sh "${TAILSCALE_VERSION}"
+        env:
+          MODULE_VERSION: ${{ env.MODULE_VERSION }}
 
+      - name: Checksum
+        run: |
+          sha256sum "dist/Magisk-Tailscaled-${MODULE_VERSION}.zip"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "Magisk-Tailscaled-${{ env.MODULE_VERSION }}"
+          path: "dist/Magisk-Tailscaled-${{ env.MODULE_VERSION }}.zip"
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cat > release_notes.md <<'EOF'
+          ## Unofficial Magisk/KernelSU module build
+
+          > **This is an unofficial community packaging of Tailscale for rooted
+          > Android (Magisk / KernelSU). It is not an official Tailscale release.**
+
+          - **Upstream Tailscale version:** TAILSCALE_VERSION_PLACEHOLDER
+          - **Android-specific patches:** applied (`android.ssh.patch`) — enables
+            `tailscaled` and Tailscale SSH on rooted Android (root user lookup,
+            `/system/bin/sh`, `/data/ssh/root` home, Android-safe socket paths)
+          - **Architecture:** arm64 (aarch64) only
+          - Install via Magisk app → Modules → Install from storage, then reboot.
+          EOF
+          sed -i "s/TAILSCALE_VERSION_PLACEHOLDER/${TAILSCALE_VERSION}/" release_notes.md
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes-file release_notes.md \
+            "dist/Magisk-Tailscaled-${MODULE_VERSION}.zip"
+
+      - name: Sync update.json to default branch (best effort)
+        if: github.ref_type == 'tag'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cat > update.json <<EOF
+          {
+            "version": "${MODULE_VERSION}",
+            "versionCode": "$(echo "${MODULE_VERSION}" | tr -dc '0-9')",
+            "zipUrl": "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Magisk-Tailscaled-${MODULE_VERSION}.zip",
+            "changelog": "https://raw.githubusercontent.com/${{ github.repository }}/main/CHANGELOG.md"
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add update.json
+          if git diff --staged --quiet; then
+            echo "update.json already up to date"
+          else
+            git commit -m "Release ${MODULE_VERSION}"
+            git push origin HEAD:main
+          fi

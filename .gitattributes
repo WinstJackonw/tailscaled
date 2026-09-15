@@ -1,0 +1,4 @@
+# Normalize line endings: scripts and patches must stay LF for Linux/Android.
+* text=auto eol=lf
+*.png binary
+*.zip binary
