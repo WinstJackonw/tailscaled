@@ -102,25 +102,38 @@ eval "$(CGO_ENABLED=0 go run ./cmd/mkversion)"
 echo "    VERSION_SHORT=${VERSION_SHORT} VERSION_LONG=${VERSION_LONG}"
 ldflags="-X tailscale.com/version.longStamp=${VERSION_LONG} -X tailscale.com/version.shortStamp=${VERSION_SHORT}"
 
-if [ -n "${ANDROID_NDK_HOME:-}" ]; then
-  NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt"
-  case "$(go env GOHOSTOS)" in
-    windows) NDK_TRIPLE="windows-x86_64" ;;
-    darwin)  NDK_TRIPLE="darwin-x86_64" ;;
-    *)       NDK_TRIPLE="linux-x86_64" ;;
-  esac
-  NDK_BIN="${NDK_BIN}/${NDK_TRIPLE}/bin"
-  echo "==> Building arm64 with NDK CGO (${NDK_BIN}/aarch64-linux-android21-clang)"
-  CC="${NDK_BIN}/aarch64-linux-android21-clang" \
-  CXX="${NDK_BIN}/aarch64-linux-android21-clang++" \
-  CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
-    go build -tags ts_include_cli,ts_omit_systray -trimpath -ldflags "${ldflags} -s -w" \
-    -o ./tailscale.combined ./cmd/tailscaled
-else
-  echo "==> ANDROID_NDK_HOME not set; building static CGO_ENABLED=0 arm64"
-  CGO_ENABLED=0 GOOS=android GOARCH=arm64 \
-    go build -tags ts_include_cli,ts_omit_systray -trimpath -ldflags "${ldflags} -s -w" \
-    -o ./tailscale.combined ./cmd/tailscaled
+echo "==> Building pure-Go static Android/arm64 binary"
+
+NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+CC="${NDK_BIN}/aarch64-linux-android35-clang" \
+CXX="${NDK_BIN}/aarch64-linux-android35-clang++" \
+CGO_ENABLED=1 \
+GOOS=android \
+GOARCH=arm64 \
+go build \
+  -buildmode=exe \
+  -tags 'ts_include_cli,ts_omit_systray,netgo,osusergo' \
+  -trimpath \
+  -ldflags "${ldflags} -s -w -linkmode=external -extldflags '-static'" \
+  -o ./tailscale.combined \
+  ./cmd/tailscaled
+echo "==> Verifying ELF"
+
+file ./tailscale.combined
+readelf -h ./tailscale.combined
+readelf -l ./tailscale.combined
+
+if readelf -l ./tailscale.combined | grep -q 'INTERP'; then
+    echo "::error::Binary has a PT_INTERP segment"
+    readelf -l ./tailscale.combined | grep -A2 INTERP
+    exit 1
+fi
+
+if readelf -d ./tailscale.combined 2>/dev/null | grep -q '(NEEDED)'; then
+    echo "::error::Binary has dynamic library dependencies"
+    readelf -d ./tailscale.combined
+    exit 1
 fi
 
 if command -v upx >/dev/null 2>&1; then
