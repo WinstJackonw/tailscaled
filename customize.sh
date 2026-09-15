@@ -20,6 +20,17 @@ if [ -f "$INSTALL_DIR/scripts/tailscaled.service" ]; then
    "$INSTALL_DIR/scripts/tailscaled.service" stop 2>&1 > /dev/null
 fi
 
+# Magisk/KernelSU may report the Android userspace architecture as arm even
+# when the kernel can run the bundled arm64 binary.
+if [ "$ARCH" = "arm" ]; then
+  case "$(uname -m 2>/dev/null)" in
+    aarch64|arm64)
+      ui_print "- 32-bit Android userspace on AArch64 kernel; using arm64 binary"
+      ARCH=arm64
+      ;;
+  esac
+fi
+
 if [ "$ARCH" != "arm64" ]; then
   abort "! Unsupported architecture: $ARCH"
 fi

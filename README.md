@@ -17,7 +17,9 @@ After installation, the Tailscale daemon (`tailscaled`) will run automatically o
 
 ## Limitation
 
-- This module only support `arm64` architecture.
+- This module requires an `arm64` (AArch64) kernel, including devices with
+  32-bit Android userspace on an AArch64 kernel. These devices use the bundled
+  arm64 binary, and the installer explicitly reports this configuration.
 
 ## Tailscale SSH 
 - For ssh home directory is created at `/data/ssh/root` with Bourne shell (sh) as default shell.
