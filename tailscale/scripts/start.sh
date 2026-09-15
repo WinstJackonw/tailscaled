@@ -13,8 +13,9 @@ start_service() {
   fi
 }
 start_inotifyd() {
-  for PID in $(busybox pidof inotifyd); do
-    if grep -q "${tailscaled_inotify}" "/proc/$PID/cmdline"; then
+  # With "busybox inotifyd", the process name is busybox on Android.
+  for PID in $(busybox pidof busybox inotifyd); do
+    if tr '\000' '\n' < "/proc/$PID/cmdline" 2>/dev/null | grep -Fxq "$tailscaled_inotify"; then
       return 0
     fi
   done
