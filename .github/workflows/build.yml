@@ -55,16 +55,6 @@ jobs:
         with:
           go-version: "stable"
 
-      - name: Locate Android NDK
-        run: |
-          set -euo pipefail
-          if [ -z "${ANDROID_NDK_HOME:-}" ]; then
-            NDK_DIR="$(ls -d /usr/local/lib/android/sdk/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
-            if [ -n "${NDK_DIR}" ]; then
-              echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
-            fi
-          fi
-
       - name: Build module ZIP
         run: bash ./build.sh "${TAILSCALE_VERSION}"
         env:

@@ -12,12 +12,7 @@
 #   ./build.sh v1.102.4           # override upstream version
 #
 # Environment:
-#   ANDROID_NDK_HOME  NDK path. When set, the binary is built with
-#                     CGO_ENABLED=1 using the NDK clang toolchain (same as CI).
-#                     Without it, a fully static CGO_ENABLED=0 build is used,
-#                     which needs no Android toolchain and works fine for
-#                     rooted Android (user/group lookups are handled by
-#                     android.ssh.patch).
+#   Builds always use GOOS=linux CGO_ENABLED=0: no Bionic or Android linker.
 #   UPX               optional; if available, the binary is compressed.
 #
 set -euo pipefail
@@ -90,9 +85,9 @@ else
   patch -p1 < "${REPO_ROOT}/android.ssh.patch"
 fi
 
-echo "==> Redirecting resolv.conf paths to /data/adb/tailscale/etc"
-sed -i 's|/etc/resolv.conf|/data/adb/tailscale/etc/resolv.conf|g' net/dns/resolvconfpath_default.go
-sed -i 's|/etc/resolv.pre-tailscale-backup.conf|/data/adb/tailscale/etc/resolv.pre-tailscale-backup.conf|g' net/dns/resolvconfpath_default.go
+cp -r "${REPO_ROOT}/upstream-overlay/." .
+echo "==> Testing rooted Android adaptations"
+CGO_ENABLED=0 go test ./util/androidroot ./paths ./util/osuser ./wgengine/router/osrouter
 
 # ---------------------------------------------------------------------------
 # 3. Build arm64 combined binary with upstream version metadata
@@ -102,7 +97,7 @@ eval "$(CGO_ENABLED=0 go run ./cmd/mkversion)"
 echo "    VERSION_SHORT=${VERSION_SHORT} VERSION_LONG=${VERSION_LONG}"
 ldflags="-X tailscale.com/version.longStamp=${VERSION_LONG} -X tailscale.com/version.shortStamp=${VERSION_SHORT}"
 
-echo "==> Building pure-Go static Android/arm64 binary"
+echo "==> Building static Linux/arm64 binary with rooted Android runtime support"
 
 CGO_ENABLED=0 \
 GOOS=linux \

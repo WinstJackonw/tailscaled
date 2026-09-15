@@ -1,3 +1,23 @@
+diff --git a/cmd/tailscaled/tailscaled.go b/cmd/tailscaled/tailscaled.go
+index d7c19f5..6d5490c 100644
+--- a/cmd/tailscaled/tailscaled.go
++++ b/cmd/tailscaled/tailscaled.go
+@@ -58,6 +58,7 @@
+ 	"tailscale.com/types/key"
+ 	"tailscale.com/types/logger"
+ 	"tailscale.com/types/logid"
++	"tailscale.com/util/androidroot"
+ 	"tailscale.com/util/osshare"
+ 	"tailscale.com/util/syspolicy/pkey"
+ 	"tailscale.com/util/syspolicy/policyclient"
+@@ -195,6 +196,7 @@ func shouldRunCLI() bool {
+ type proxyStartFunc = func(logf logger.Logf, dialer *tsdial.Dialer)
+ 
+ func main() {
++	androidroot.Configure()
+ 	envknob.PanicIfAnyEnvCheckedInInit()
+ 	if shouldRunCLI() {
+ 		beCLI()
 diff --git a/envknob/featureknob/featureknob.go b/envknob/featureknob/featureknob.go
 index 0493665..eab17fe 100644
 --- a/envknob/featureknob/featureknob.go
@@ -24,20 +44,53 @@ index bd22005..6471811 100644
  
  // Package ssh registers the Tailscale SSH feature, including host key
  // management and the SSH server.
+diff --git a/net/dns/manager_linux.go b/net/dns/manager_linux.go
+index 392b64b..031e8ee 100644
+--- a/net/dns/manager_linux.go
++++ b/net/dns/manager_linux.go
+@@ -65,7 +65,7 @@ func (kv kv) String() string {
+ //
+ // The health tracker may be nil; the knobs may be nil and are ignored on this platform.
+ func NewOSConfigurator(logf logger.Logf, health *health.Tracker, bus *eventbus.Bus, _ policyclient.Client, _ *controlknobs.Knobs, interfaceName string) (ret OSConfigurator, err error) {
+-	if !buildfeatures.HasDNS || distro.Get() == distro.JetKVM {
++	if !buildfeatures.HasDNS || distro.Get() == distro.JetKVM || distro.Get() == distro.Android {
+ 		return NewNoopManager()
+ 	}
+ 
 diff --git a/paths/paths.go b/paths/paths.go
-index 398d8b2..8bba364 100644
+index 398d8b2..a888837 100644
 --- a/paths/paths.go
 +++ b/paths/paths.go
 @@ -22,6 +22,9 @@
  // DefaultTailscaledSocket returns the path to the tailscaled Unix socket
  // or the empty string if there's no reasonable default.
  func DefaultTailscaledSocket() string {
-+	if runtime.GOOS == "android" {
++	if (runtime.GOOS == "android" || distro.Get() == distro.Android) {
 +		return "/data/adb/tailscale/run/tailscaled.sock"
 +	}
  	if runtime.GOOS == "windows" {
  		return `\\.\pipe\ProtectedPrefix\Administrators\Tailscale\tailscaled`
  	}
+@@ -62,6 +65,9 @@ func DefaultTailscaledSocket() string {
+ // tailscaled state file, or the empty string if there's no reasonable
+ // default value.
+ func DefaultTailscaledStateFile() string {
++	if distro.Get() == distro.Android {
++		return "/data/adb/tailscale/run/tailscaled.state"
++	}
+ 	if f := stateFileFunc; f != nil {
+ 		return f()
+ 	}
+@@ -91,6 +97,9 @@ func DefaultTailscaledStateDir() string {
+ // automatically creates the state directory for tailscaled
+ // when it's absent.
+ func MakeAutomaticStateDir() bool {
++	if distro.Get() == distro.Android {
++		return true
++	}
+ 	switch runtime.GOOS {
+ 	case "plan9":
+ 		return true
 diff --git a/ssh/tailssh/c2n.go b/ssh/tailssh/c2n.go
 index 621be74..821e4c2 100644
 --- a/ssh/tailssh/c2n.go
@@ -65,7 +118,7 @@ index 8046a02..358e6dd 100644
  package tailssh
  
 diff --git a/ssh/tailssh/incubator.go b/ssh/tailssh/incubator.go
-index faf70af..11f0c99 100644
+index faf70af..b78e22a 100644
 --- a/ssh/tailssh/incubator.go
 +++ b/ssh/tailssh/incubator.go
 @@ -7,7 +7,7 @@
@@ -85,11 +138,30 @@ index faf70af..11f0c99 100644
  )
  
  func init() {
-@@ -866,6 +867,12 @@ func doDropPrivileges(dlogf logger.Logf, wantUid, wantGid int, supplementaryGrou
+@@ -551,6 +552,9 @@ func runningAsRoot() bool {
+ // Note that this uses unix.Exec to replace the current process, so in cases
+ // where we actually do run login, no subsequent Go code will execute.
+ func tryExecLogin(dlogf logger.Logf, ia incubatorArgs) error {
++	if distro.Get() == distro.Android {
++		return nil // Android has no PAM login; execute the user's shell directly.
++	}
+ 	// Only the macOS version of the login command supports executing a
+ 	// command, all other versions only support launching a shell without
+ 	// taking any arguments.
+@@ -649,7 +653,7 @@ func findSU(dlogf logger.Logf, ia incubatorArgs) string {
+ 
+ 	// gokrazy doesn't include su. And, if someone installs a breakglass/
+ 	// debugging package on gokrazy, we don't want to use its su.
+-	if distro.Get() == distro.Gokrazy {
++	if distro.Get() == distro.Gokrazy || distro.Get() == distro.Android {
+ 		return ""
+ 	}
+ 
+@@ -866,6 +870,12 @@ func doDropPrivileges(dlogf logger.Logf, wantUid, wantGid int, supplementaryGrou
  // via an inherited file instead (see forwardedEnvFile).
  func (ss *sshSession) incubatorEnv() []string {
  	env := envForUser(ss.conn.localUser)
-+	if runtime.GOOS == "android" {
++	if (runtime.GOOS == "android" || distro.Get() == distro.Android) {
 +		// On rooted Android, append the tailscaled daemon environment so the
 +		// SSH session inherits HOME (module sets HOME=/data/ssh/root) and an
 +		// Android-appropriate PATH. Restores pre-1.83 upstream behavior.
@@ -98,7 +170,7 @@ index faf70af..11f0c99 100644
  	for _, kv := range ss.Environ() {
  		if acceptEnvPair(kv) {
  			env = append(env, kv)
-@@ -1220,6 +1227,9 @@ func (ia *incubatorArgs) loginArgs(loginCmdPath string) []string {
+@@ -1220,6 +1230,9 @@ func (ia *incubatorArgs) loginArgs(loginCmdPath string) []string {
  		return []string{loginCmdPath, "-f", ia.localUser, "-h", ia.remoteIP, "-p"}
  	case freebsd, openbsd:
  		return []string{loginCmdPath, "-fp", "-h", ia.remoteIP, ia.localUser}
@@ -108,11 +180,11 @@ index faf70af..11f0c99 100644
  	}
  	panic("unimplemented")
  }
-@@ -1237,6 +1247,15 @@ func shellArgs(isShell bool, cmd string) []string {
+@@ -1237,6 +1250,15 @@ func shellArgs(isShell bool, cmd string) []string {
  }
  
  func setGroups(groupIDs []int) error {
-+	if runtime.GOOS == "android" {
++	if (runtime.GOOS == "android" || distro.Get() == distro.Android) {
 +		if os.Geteuid() == 0 {
 +			err := syscall.Setgroups(groupIDs)
 +			if err != nil {
@@ -205,7 +277,7 @@ index 8d7775c..0b2a10d 100644
  package tailssh
  
 diff --git a/util/osuser/user.go b/util/osuser/user.go
-index 3fdbfbb..e348d21 100644
+index 3fdbfbb..9a06762 100644
 --- a/util/osuser/user.go
 +++ b/util/osuser/user.go
 @@ -10,6 +10,7 @@
@@ -216,17 +288,20 @@ index 3fdbfbb..e348d21 100644
  	"os/exec"
  	"os/user"
  	"reflect"
-@@ -106,6 +107,30 @@ func lookup(usernameOrUID string, std lookupStd, wantShell bool) (*user.User, st
+@@ -106,6 +107,33 @@ func lookup(usernameOrUID string, std lookupStd, wantShell bool) (*user.User, st
  		}, "/bin/rc", nil
  	}
  
-+	if runtime.GOOS == "android" {
++	if (runtime.GOOS == "android" || distro.Get() == distro.Android) {
 +		var shell string
 +		if wantShell {
 +			shell = "/system/bin/sh"
 +		}
 +
-+		homeDir := "/"
++		if usernameOrUID != "root" && usernameOrUID != "0" {
++			return nil, "", fmt.Errorf("Android SSH only supports root, got %q", usernameOrUID)
++		}
++		homeDir := "/data/ssh/root"
 +		if out, err := os.UserHomeDir(); err == nil {
 +			homeDir = strings.TrimSpace(string(out))
 +		}
@@ -247,3 +322,37 @@ index 3fdbfbb..e348d21 100644
  	// Start with getent if caller wants to get the user shell.
  	if wantShell {
  		return userLookupGetent(usernameOrUID, std)
+diff --git a/version/distro/distro.go b/version/distro/distro.go
+index 5407f8d..3907f38 100644
+--- a/version/distro/distro.go
++++ b/version/distro/distro.go
+@@ -18,6 +18,7 @@
+ type Distro string
+ 
+ const (
++	Android   = Distro("android")
+ 	Debian    = Distro("debian")
+ 	Crostini  = Distro("crostini") // ChromeOS Crostini Linux container; Debian-based
+ 	Arch      = Distro("arch")
+@@ -74,6 +75,8 @@ func haveDir(file string) bool {
+ 
+ func linuxDistro() Distro {
+ 	switch {
++	case have("/system/bin/getprop") && have("/system/bin/sh"):
++		return Android
+ 	case haveDir("/usr/syno"):
+ 		return Synology
+ 	case have("/usr/local/bin/freenas-debug"):
+diff --git a/wgengine/router/osrouter/router_linux.go b/wgengine/router/osrouter/router_linux.go
+index c8b31d0..23dec6e 100644
+--- a/wgengine/router/osrouter/router_linux.go
++++ b/wgengine/router/osrouter/router_linux.go
+@@ -1649,7 +1649,7 @@ func mustRouteTable(num int) RouteTable {
+ // ipRules returns the appropriate list of ip rules to be used by Tailscale. See
+ // comments on baseIPRules and ubntIPRules for more details.
+ func ipRules() []netlink.Rule {
+-	if getDistroFunc() == distro.UBNT {
++	if getDistroFunc() == distro.UBNT || getDistroFunc() == distro.Android {
+ 		return ubntIPRules
+ 	}
+ 	return baseIPRules
