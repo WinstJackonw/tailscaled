@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout module repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Determine upstream version
         run: |
@@ -51,7 +51,7 @@ jobs:
           echo "MODULE_VERSION=${UPSTREAM}-module.1" >> "$GITHUB_ENV"
 
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: "stable"
 
@@ -66,7 +66,7 @@ jobs:
           fi
 
       - name: Build module ZIP
-        run: ./build.sh "${TAILSCALE_VERSION}"
+        run: bash ./build.sh "${TAILSCALE_VERSION}"
         env:
           MODULE_VERSION: ${{ env.MODULE_VERSION }}
 
