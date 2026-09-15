@@ -15,6 +15,32 @@ This repository contains a Magisk and KernelSU module for running Tailscale on r
 
 After installation, the Tailscale daemon (`tailscaled`) will run automatically on boot.
 
+### Testing the combined binary over ADB
+
+`TS_BE_CLI=1` selects the CLI; it does not start a daemon. Start the daemon
+first from a root shell, then log in from another root shell:
+
+```sh
+mkdir -p /data/adb/tailscale/run
+chmod 700 /data/adb/tailscale/run
+/data/local/tmp/tailscale.combined
+# In another root shell:
+TS_BE_CLI=1 /data/local/tmp/tailscale.combined login --accept-dns=false
+```
+
+Both commands default to `/data/adb/tailscale/run/tailscaled.sock`, regardless
+of the working directory. For an installed module, use
+`tailscaled.service start` followed by `tailscale login --accept-dns=false`.
+Startup only reports success after the daemon's local API responds.
+
+The static Linux binary detects Android at runtime, uses Android's system CA
+directories, and leaves system DNS under netd's control. Its own DNS resolver
+reads `net.dns1` through `net.dns4`, refreshing within five seconds. If these
+properties are absent it uses `1.1.1.1` and `8.8.8.8` for bootstrap DNS.
+Override daemon DNS by creating `/data/adb/tailscale/etc/resolv.conf` with
+`nameserver <IP>` lines. This file does not change Android application DNS.
+Tailscale SSH supports the `root` account only.
+
 ## Limitation
 
 - This module requires an `arm64` (AArch64) kernel, including devices with
@@ -58,8 +84,10 @@ This module is confirmed to be supported for KernelSU
 
 - `./build.sh` builds the module ZIP from the upstream Tailscale tag pinned in
   `TAILSCALE_VERSION`, applies `android.ssh.patch`, and prints the SHA-256 of
-  the resulting ZIP. Requires Go; optionally set `ANDROID_NDK_HOME` for a
-  CGO build (otherwise a static `CGO_ENABLED=0` build is produced).
+  the resulting ZIP. Requires Go and builds with `GOOS=linux`, `GOARCH=arm64`,
+  `CGO_ENABLED=0`. No NDK, Bionic, or `/system/bin/linker64` is required.
+  CI runs adaptation regression tests and rejects ELF interpreter or shared
+  library dependencies before packaging.
 - CI (`.github/workflows/build.yml`) builds on `v*-module.*` tag pushes and on
   `workflow_dispatch`, attaching the ZIP to a GitHub Release.
 - **This is an unofficial fork/module packaging of Tailscale** — releases are

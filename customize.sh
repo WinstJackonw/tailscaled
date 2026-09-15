@@ -39,6 +39,9 @@ rm -rf $MODPATH/files $MODPATH/tailscale
 
 ui_print "- Setting permissions"
 set_perm_recursive $INSTALL_DIR 0 0 0755 0755
+mkdir -p "$INSTALL_DIR/run" "$INSTALL_DIR/etc"
+chmod 0700 "$INSTALL_DIR/run" "$INSTALL_DIR/etc"
+find "$INSTALL_DIR/run" -type f -exec chmod 0600 {} \;
 set_perm_recursive $MODPATH/system/bin 0 0 0755 0755
 set_perm $MODPATH/service.sh 0 0 0755
 mv -f "$MODPATH/service.sh" "$SERVICE_DIR/tailscaled_service.sh"

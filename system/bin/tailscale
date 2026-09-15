@@ -1,7 +1,9 @@
 #!/system/bin/sh
-source /data/adb/tailscale/settings.ini
-if echo "$@" | grep -q -- '--socket='; then # if socket is specified, use it
-    "${tailscale_bin}" "$@"
-else # otherwise, use the default socket
-    "${tailscale_bin}" ${tailscale_bin_param} "$@" 
-fi
+. /data/adb/tailscale/settings.ini
+export TS_BE_CLI=1
+for arg in "$@"; do
+    case "$arg" in
+        --socket|--socket=*|-socket|-socket=*) exec "$tailscale_bin" "$@" ;;
+    esac
+done
+exec "$tailscale_bin" $tailscale_bin_param "$@"

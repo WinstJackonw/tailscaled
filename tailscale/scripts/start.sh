@@ -1,6 +1,6 @@
 #!/system/bin/sh
 DIR=${0%/*}
-source $DIR/../settings.ini
+. "$DIR/../settings.ini"
 
 stop_service() {
   if [ -f "${tailscaled_run_dir}/tailscaled.pid" ]; then
@@ -13,18 +13,18 @@ start_service() {
   fi
 }
 start_inotifyd() {
-  PIDs=($(busybox pidof inotifyd))
-  for PID in "${PIDs[@]}"; do
+  for PID in $(busybox pidof inotifyd); do
     if grep -q "${tailscaled_inotify}" "/proc/$PID/cmdline"; then
-      kill -9 "$PID"
+      return 0
     fi
   done
-  echo "${current_time} [Info]: Starting tailscaled inotify service" > "${tailscaled_service_log}"
-  inotifyd "${tailscaled_inotify}" "${module_dir}" >> "/dev/null" 2>&1 &
+  echo "${current_time} [Info]: Starting tailscaled inotify service" >> "${tailscaled_service_log}"
+  nohup busybox inotifyd "${tailscaled_inotify}" "${module_dir}" >/dev/null 2>&1 < /dev/null &
 }
-mkdir -p ${tailscaled_run_dir}
-rm -f ${tailscaled_runs_log}
+umask 077
+mkdir -p "$tailscaled_run_dir"
+chmod 0700 "$tailscaled_run_dir"
 module_version=$(busybox awk -F'=' '!/^ *#/ && /version=/ { print $2 }' "$module_prop" 2>/dev/null)
 log Info "Magisk Tailscaled version : ${module_version}."
-start_service
+start_service || exit 1
 start_inotifyd

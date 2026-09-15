@@ -1,7 +1,8 @@
 #!/system/bin/sh
-source /data/adb/tailscale/settings.ini
+. /data/adb/tailscale/settings.ini
+unset TS_BE_CLI
 if [ $# -eq 0 ]; then # if no arguments are passed, start tailscaled
-    "${tailscaled_bin}" ${tailscaled_bin_param}
+    exec "${tailscaled_bin}" ${tailscaled_bin_param}
 else # otherwise, run tailscale with the arguments passed
-    "${tailscaled_bin}" "$@"
+    exec "${tailscaled_bin}" "$@"
 fi

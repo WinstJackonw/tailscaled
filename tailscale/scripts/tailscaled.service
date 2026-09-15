@@ -1,154 +1,138 @@
 #!/system/bin/sh
 DIR=${0%/*}
-source $DIR/../settings.ini
-scripts_name=$(basename $0)
+. "$DIR/../settings.ini"
+umask 077
+mkdir -p "$tailscaled_run_dir" || exit 1
+chmod 0700 "$tailscaled_run_dir"
 
-tailscale_up() {
-    local start_time=$(date +%s)
-    local timeout_duration=30
-    local current_time
-    local elapsed_time
-    while true; do
-        if ip link show tailscale0 > /dev/null 2>&1; then
-          ip route add 100.64.0.0/10 dev tailscale0 metric 1
-          iptables -t mangle -A OUTPUT -d 100.64.0.0/10 -j MARK --set-mark 1099
-          ip rule add fwmark 1099 table 1099
-          ip rule add fwmark 1099 lookup 1099
-          log Info "✔ iptables route added"
-          return
-        fi
-        current_time=$(date +%s)
-        elapsed_time=$((current_time - start_time))
-        if [ ${elapsed_time} -ge ${timeout_duration} ]; then
-            return
-        fi
-        sleep 3
-    done
+is_daemon() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$tailscaled_bin" ] && kill -0 "$1" 2>/dev/null
 }
 
-tailscale_down() {
-    ip rule del fwmark 1099 table 1099
-    ip rule del fwmark 1099 lookup 1099
-    iptables -t mangle -D OUTPUT -d 100.64.0.0/10 -j MARK --set-mark 1099
-    ip route del 100.64.0.0/10 dev tailscale0
-    log Info "✘ iptables route deleted"
-    return 0
+find_daemon() {
+  PID=$(cat "$tailscaled_pid" 2>/dev/null)
+  is_daemon "$PID" && return 0
+  for proc in /proc/[0-9]*/exe; do
+    [ "$(readlink "$proc" 2>/dev/null)" = "$tailscaled_bin" ] || continue
+    PID=${proc#/proc/}
+    PID=${PID%/exe}
+    is_daemon "$PID" && return 0
+  done
+  PID=
+  return 1
+}
+
+ready() {
+  [ -S "$tailscaled_run_dir/tailscaled.sock" ] &&
+    TS_BE_CLI=1 timeout 3 "$tailscale_bin" $tailscale_bin_param status --json >/dev/null 2>&1
+}
+
+describe() {
+  [ -f "$module_prop" ] || return 0
+  sed -i "s/^description=\(\[.*\][[:space:]]*\)*/description=[ $1 ] /" "$module_prop"
+}
+
+lock_service() {
+  lock="$tailscaled_run_dir/service.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    owner=$(cat "$lock/pid" 2>/dev/null)
+    case "$owner" in
+      ''|*[!0-9]*) echo 'Service operation already in progress' >&2; return 1 ;;
+    esac
+    if kill -0 "$owner" 2>/dev/null; then
+      echo 'Service operation already in progress' >&2
+      return 1
+    fi
+    rm -f "$lock/pid"
+    rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null || return 1
+  fi
+  echo $$ > "$lock/pid"
+  trap 'rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null' EXIT
+  trap 'exit 1' HUP INT TERM
 }
 
 start_tailscaled() {
-  sed -Ei "s/^description=(\[.*][[:space:]]*)?/description=[ ⏲ $current_time | ✔ tailscaled service is running!!! ] /g" "$module_prop"
-  PID=$(busybox pidof "${tailscaled_bin}")
-  if [ -n "$PID" ]; then
-    log Info "✔ tailscaled service running with PID : ( $PID )."
-    return
+  if find_daemon; then
+    if ready; then
+      echo "$PID" > "$tailscaled_pid"
+      echo "tailscaled ready (PID $PID)"
+      return 0
+    fi
+    echo "tailscaled PID $PID is not ready; inspect $tailscaled_log or restart" >&2
+    return 1
   fi
-  setup_home
-  # The logs time cannot set to current timezone, default is UTC.
-  nohup ${tailscaled_bin} ${tailscaled_bin_param} > "${tailscaled_log}" 2>&1 &
+  rm -f "$tailscaled_pid" "$tailscaled_run_dir/tailscaled.sock"
+  setup_home || return 1
+  (unset TS_BE_CLI; exec nohup "$tailscaled_bin" $tailscaled_bin_param) > "$tailscaled_log" 2>&1 < /dev/null &
   PID=$!
-  echo -n $PID > "${tailscaled_pid}"
-  log Info "✔ tailscaled service running with PID : ( $PID )."
-  tailscale_up > /dev/null 2>&1 &
-}
-stop_tailscaled(){
-  sed -Ei "s/^description=(\[.*][[:space:]]*)?/description=[ ⏲ $current_time | ✘ tailscaled shutting down, service is stopped !!! ] /g" "$module_prop"
-  # Check if the binary is running using pgrep
-  if busybox pgrep "${tailscaled_bin}" >/dev/null; then
-    # Use `busybox pkill` to kill the binary with signal 15, otherwise use `killall`.
-    if busybox pkill -15 -e "${tailscaled_bin}" >/dev/null 2>&1; then
-      : # Do nothing if busybox pkill is successful
-    else
-      killall -15 "${tailscaled_bin}" >/dev/null 2>&1 || kill -15 "$(busybox pidof "${tailscaled_bin}")" >/dev/null 2>&1
+  echo "$PID" > "$tailscaled_pid"
+  attempts=0
+  while [ "$attempts" -lt 30 ]; do
+    if ! kill -0 "$PID" 2>/dev/null; then
+      rm -f "$tailscaled_pid"
+      describe 'tailscaled failed'
+      echo "tailscaled exited during startup; see $tailscaled_log" >&2
+      tail -n 15 "$tailscaled_log" >&2
+      return 1
     fi
-  else
-    log Info "✘ tailscaled service already stop."
-    rm -f "${tailscaled_pid}"
-    [ -t 1 ] && echo -e "${white}--------------------------------------------${normal}"
-    return
-  fi
-  # Check if the binary has stopped
-  sleep 0.5
-  if ! busybox pidof "${tailscaled_bin}" >/dev/null 2>&1; then
-    # Delete the `tailscaled.pid` file if it exists
-    rm -f "${tailscaled_pid}"
-    log Info "✘ tailscaled shutting down, service is stopped."
-    log Info "✘ tailscaled disconnected."
-    [ -t 1 ] && echo -e "${white}--------------------------------------------${normal}"
-  else
-    log Warning "⚠️ tailscaled Not stopped; may still be shutting down or failed to shut down."
-    force_stop
-  fi
-  tailscale_down
-  
+    if ready; then
+      describe 'tailscaled running'
+      log Info "tailscaled ready (PID $PID)"
+      echo "tailscaled ready (PID $PID)"
+      return 0
+    fi
+    sleep 1
+    attempts=$((attempts + 1))
+  done
+  echo "tailscaled startup timed out; see $tailscaled_log" >&2
+  stop_tailscaled
+  return 1
 }
-force_stop() {
-  # try forcing it to shut down.
-  log Warning "⚠️ try forcing it to shut down."
-  # Use `busybox pkill` to kill the binary with signal 9, otherwise use `killall`.
-  if busybox pkill -9 "${tailscaled_bin}"; then
-    : # Do nothing if busybox pkill is successful
-  else
-    if command -v killall >/dev/null 2>&1; then
-      killall -9 "${tailscaled_bin}" >/dev/null 2>&1 || true
-    else
-      pkill -9 "${tailscaled_bin}" >/dev/null 2>&1 || true
+
+stop_tailscaled() {
+  if find_daemon; then
+    kill -TERM "$PID" || return 1
+    attempts=0
+    while is_daemon "$PID" && [ "$attempts" -lt 20 ]; do
+      sleep 1
+      attempts=$((attempts + 1))
+    done
+    if is_daemon "$PID"; then
+      echo "tailscaled PID $PID did not stop; preserving PID file" >&2
+      return 1
     fi
   fi
-  sleep 0.5
-  if ! busybox pidof "${tailscaled_bin}" >/dev/null 2>&1; then
-    log Info "✔ done, you can sleep peacefully."
-    [ -t 1 ] && echo -e "${white}--------------------------------------------${normal}"
-    rm -f "${tailscaled_pid}"
-  fi
+  rm -f "$tailscaled_pid" "$tailscaled_run_dir/tailscaled.sock"
+  describe 'tailscaled stopped'
+  log Info 'tailscaled stopped'
+  echo 'tailscaled stopped'
 }
-log_view(){
-  case "$1" in
-    runs)
-      busybox less -F~ "${tailscaled_runs_log}"
-      ;;
-    service)
-      busybox less -F~ "${tailscaled_service_log}"
-      ;;
-    tailscaled)
-      busybox tail -q -n +1 -F "${tailscaled_log}"
-      ;;
-    *)
-      if [ -n "$1" ]; then
-        echo "${red}${scripts_name} log $1 not found${normal}"
-      fi
-      echo "${yellow}usage${normal}: ${green}${scripts_name}${normal} ${yellow}log${normal} {${orange}runs|service|tailscaled${normal}}"
-      ;;
-  esac
-  
-}
+
 case "$1" in
-  start)
-    start_tailscaled
-    ;;
-  stop)
-    stop_tailscaled
-    ;;
-  restart)
-    stop_tailscaled
-    sleep 0.5
-    start_tailscaled
+  start|stop|restart)
+    lock_service || exit 1
+    case "$1" in
+      start) start_tailscaled ;;
+      stop) stop_tailscaled ;;
+      restart) stop_tailscaled && start_tailscaled ;;
+    esac
     ;;
   status)
-    # Check whether the service is running or not
-    PID=$(busybox pidof "${tailscaled_bin}")
-    if [ -n "$PID" ]; then
-      log Info "✔ tailscaled service is running with PID : ( $PID )."
+    if find_daemon && ready; then
+      echo "tailscaled ready (PID $PID)"
     else
-      log Info "✘ tailscaled service is stopped."
+      echo 'tailscaled stopped or not ready'
+      exit 1
     fi
     ;;
   log)
-    log_view $2
+    case "$2" in
+      runs) cat "$tailscaled_runs_log" ;;
+      service) cat "$tailscaled_service_log" ;;
+      tailscaled|'') tail -n 100 -f "$tailscaled_log" ;;
+      *) echo 'usage: tailscaled.service log {runs|service|tailscaled}' >&2; exit 2 ;;
+    esac
     ;;
-  *)
-    if [ -n "$1" ]; then
-      echo "${red}${scripts_name} $1 not found${normal}"
-    fi
-    echo "${yellow}usage${normal}: ${green}${scripts_name}${normal} {${yellow}start|stop|restart|status|log${normal}{${orange}runs|service|tailscaled${normal}${yellow}}${normal}}"
-    ;;
+  *) echo 'usage: tailscaled.service {start|stop|restart|status|log}' >&2; exit 2 ;;
 esac
