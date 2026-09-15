@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"tailscale.com/net/dnscache"
 	"tailscale.com/version/distro"
 )
 
@@ -33,6 +34,9 @@ func Configure() {
 	// Keep the pointer: packages may already hold net.DefaultResolver.
 	net.DefaultResolver.PreferGo = true
 	net.DefaultResolver.Dial = dialDNS
+	// Control and log upload use a separate caching resolver, whose default
+	// forwarder otherwise still queries Linux's nonexistent localhost DNS.
+	dnscache.Get().Forward = net.DefaultResolver
 }
 
 var dnsCache struct {
