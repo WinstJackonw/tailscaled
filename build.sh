@@ -104,20 +104,17 @@ ldflags="-X tailscale.com/version.longStamp=${VERSION_LONG} -X tailscale.com/ver
 
 echo "==> Building pure-Go static Android/arm64 binary"
 
-NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-
-CC="${NDK_BIN}/aarch64-linux-android35-clang" \
-CXX="${NDK_BIN}/aarch64-linux-android35-clang++" \
-CGO_ENABLED=1 \
-GOOS=android \
+CGO_ENABLED=0 \
+GOOS=linux \
 GOARCH=arm64 \
 go build \
   -buildmode=exe \
-  -tags 'ts_include_cli,ts_omit_systray,netgo,osusergo' \
+  -tags 'ts_include_cli,ts_omit_systray' \
   -trimpath \
-  -ldflags "${ldflags} -s -w -linkmode=external -extldflags '-static'" \
-  -o ./tailscale.combined \
+  -ldflags "${ldflags} -s -w" \
+  -o tailscale.combined \
   ./cmd/tailscaled
+
 echo "==> Verifying ELF"
 
 file ./tailscale.combined
